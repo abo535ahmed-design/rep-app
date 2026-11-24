@@ -304,7 +304,9 @@ CREATE TABLE IF NOT EXISTS deposits(id INTEGER PRIMARY KEY, d TEXT, cust_id INT,
 CREATE TABLE IF NOT EXISTS old_ledger(id INTEGER PRIMARY KEY, d TEXT, cust_id INT, cust_name TEXT, kind TEXT, amount REAL, method TEXT, note TEXT);
 CREATE TABLE IF NOT EXISTS expenses(id INTEGER PRIMARY KEY, d TEXT, amount REAL, cat TEXT, src TEXT, note TEXT);
 CREATE TABLE IF NOT EXISTS advances(id INTEGER PRIMARY KEY, d TEXT, amount REAL, note TEXT);
-CREATE TABLE IF NOT EXISTS handovers(id INTEGER PRIMARY KEY, d TEXT, amount REAL, receiver TEXT, note TEXT);`;
+CREATE TABLE IF NOT EXISTS handovers(id INTEGER PRIMARY KEY, d TEXT, amount REAL, receiver TEXT, note TEXT);
+CREATE TABLE IF NOT EXISTS wallet_days(id INTEGER PRIMARY KEY, d TEXT, open_json TEXT, hand_json TEXT, hand_id INT, closed INT DEFAULT 0);
+CREATE TABLE IF NOT EXISTS wallet_entries(id INTEGER PRIMARY KEY, day_id INT, cust TEXT, kind TEXT, rec_json TEXT, chg_json TEXT, amount REAL, note TEXT);`;
 const DEF = {company: 'اسم الشركة', rep: '', color: '#1f6feb', t_user: 30, t_whole: 50, warn_days: 3, inv_start: 1, cur: 'جنيه', logo: '', zoom_main: 100, zoom_sb: 100, base: 0, comm_mode: 'sales', comm_rate: 0, side: '#1b2433', menu_cfg: '{}'};
 function loadS() { S = {...DEF}; q('select * from settings').forEach(r => S[r.k] = r.v); document.documentElement.style.setProperty('--c', S.color); document.documentElement.style.setProperty('--sb', S.side);
   [['#main', S.zoom_main], ['#pv', S.zoom_main], ['#sb', S.zoom_sb]].forEach(([s, z]) => { const e = $(s); if (e) e.style.zoom = (+z || 100) / 100; }); }
@@ -340,6 +342,7 @@ const MENU = [
   ['stmt', '📄 كشف حساب عميل'],
   ['card', '🗂️ كارت الصنف'],
   ['hand', '🏦 تسليم النقدية'],
+  ['wal', '👛 المحفظة (عدّاد الفلوس)'],
   ['rep', '💰 التسوية والتقارير'],
   ['sal', '💼 المرتب والعمولات'],
   ['exp', '🧾 المصاريف'],
@@ -348,6 +351,7 @@ const MENU = [
   ['guide', '📖 دليل المستخدم'],
   ['set', '⚙️ الإعدادات']];
 function go(p) {
+  if (p == 'wal' && cur != 'wal') WV = null;
   cur = p; document.body.classList.remove('mo'); $('#tbt').textContent = S.company || '';
   $('#sb').innerHTML = `<div class="lg" onclick="logoPick()">${logoHTML()}</div><h2>${esc(S.company)}</h2>` + menuList().map(([k, t]) => `<a class="${k == p ? 'on' : ''}" onclick="go('${k}')">${t}</a>`).join('');
   $('#tbl').innerHTML = logoHTML();
@@ -372,24 +376,53 @@ PAGES.dash = () => {
 
 // ===== الأصناف والأسعار =====
 PAGES.items = () => `<h1>الأصناف والأسعار</h1>` +
-  hint('كل صنف له 3 أسعار: <b>يوزر</b> (مستهلك)، <b>جملة</b>، <b>موزع</b>. البرنامج هيختار السعر المناسب تلقائي في الفاتورة حسب الكمية (من الإعدادات). لما تغيّر سعر، اكتب تاريخ سريان السعر الجديد وملاحظة: التغيير بيتسجل في «سجل الأسعار»، والفواتير القديمة ما بتتأثرش لأن كل فاتورة بتحفظ سعرها وقت البيع.') +
+  hint('كل صنف له 3 أسعار: <b>يوزر</b> (مستهلك)، <b>جملة</b>، <b>موزع</b>. البرنامج هيختار السعر المناسب تلقائي في الفاتورة حسب الكمية (من الإعدادات). <b>اسم الصنف:</b> اضغط على الخانة واختار من القائمة (البيانات بتتحمّل تلقائي للتعديل) أو اكتب اسم جديد. <b>الوحدة:</b> اختار قطعة أو كرتونة؛ ولو كرتونة جديدة اختار «➕ كرتونة جديدة» واكتب عدد القطع (مثلًا 12) وهتظهر بعد كده في القائمة كـ«كرتونة 12ق». وجنب كل سعر بيظهر <b>سعر القطعة</b> لو الوحدة كرتونة. لما تغيّر سعر، اكتب تاريخ سريان السعر الجديد وملاحظة: التغيير بيتسجل في «سجل الأسعار»، والفواتير القديمة ما بتتأثرش لأن كل فاتورة بتحفظ سعرها وقت البيع.') +
   `<div class="card np"><input type="hidden" id="i_id"><div class="grid">
-   <div><label>كود الصنف</label><input id="i_code"></div><div><label>اسم الصنف *</label><input id="i_name"></div>
-   <div><label>الوحدة (قطعة/كرتونة..)</label><input id="i_unit" value="قطعة"></div>
-   <div><label>سعر يوزر</label><input id="i_pu" type="number" step="any"></div><div><label>سعر جملة</label><input id="i_pw" type="number" step="any"></div><div><label>سعر موزع</label><input id="i_pd" type="number" step="any"></div>
+   <div><label>كود الصنف</label><input id="i_code"></div><div><label>اسم الصنف * (اختار من القائمة أو اكتب صنف جديد)</label><input id="i_name" list="i_dl" autocomplete="off" oninput="if(!event.inputType||event.inputType=='insertReplacementText')itemPick()" onchange="itemPick()"><datalist id="i_dl">${q('select name from items order by name').map(x => `<option value="${esc(x.name)}">`).join('')}</datalist></div>
+   <div><label>الوحدة (قطعة / كرتونة ...)</label><div style="display:flex;gap:6px"><select id="i_us" style="flex:1" onchange="unitSel()">${unitOpts()}</select><input id="i_un" type="number" min="1" placeholder="عدد القطع" style="display:none;width:110px" oninput="unitSel()"><input id="i_ut" placeholder="اسم الوحدة" style="display:none" oninput="unitSel()"></div><input type="hidden" id="i_unit" value="قطعة"></div>
+   <div><label>سعر يوزر</label><input id="i_pu" type="number" step="any" oninput="unitPrices()"><small id="i_pu_u" style="color:#0a7"></small></div><div><label>سعر جملة</label><input id="i_pw" type="number" step="any" oninput="unitPrices()"><small id="i_pw_u" style="color:#0a7"></small></div><div><label>سعر موزع</label><input id="i_pd" type="number" step="any" oninput="unitPrices()"><small id="i_pd_u" style="color:#0a7"></small></div>
    <div><label>سريان السعر من تاريخ</label><input id="i_d" type="date" value="${today()}"></div><div><label>سبب/ملاحظة تغيير السعر</label><input id="i_pn"></div><div><label>عمولة المندوب على الوحدة (للطريقة الثالثة)</label><input id="i_cm" type="number" step="any" value="0"></div></div>
    <div class="bar"><button onclick="saveItem()">💾 حفظ الصنف</button><button class="g" onclick="go('items')">جديد / إلغاء</button><button class="g" onclick="window.print()">🖨️ طباعة</button></div></div>
    <table><tr><th>الكود</th><th>الصنف</th><th>الوحدة</th><th>يوزر</th><th>جملة</th><th>موزع</th><th>رصيد العهدة</th><th class="np"></th></tr>` +
-  q('select * from items order by name').map(i => `<tr><td>${esc(i.code)}</td><td>${esc(i.name)}</td><td>${esc(i.unit)}</td><td>${n(i.p_user)}</td><td>${n(i.p_whole)}</td><td>${n(i.p_dist)}</td><td>${n(bal(i.id))}</td>
+  q('select * from items order by name').map(i => `<tr><td>${esc(i.code)}</td><td>${esc(i.name)}</td><td>${esc(i.unit)}</td><td>${n(i.p_user)}${ppc(i.unit, i.p_user)}</td><td>${n(i.p_whole)}${ppc(i.unit, i.p_whole)}</td><td>${n(i.p_dist)}${ppc(i.unit, i.p_dist)}</td><td>${n(bal(i.id))}</td>
    <td class="np"><button class="s" onclick="editItem(${i.id})">تعديل</button> <button class="s r" onclick="delItem(${i.id})">حذف</button></td></tr>`).join('') + `</table>`;
+const pcs = u => { const m = /كرتون\S*\s*(\d+)\s*ق/.exec(u || ''); return m ? +m[1] : 0; };
+const ppc = (u, p) => { const k = pcs(u); return k > 0 && p > 0 ? `<br><small style="color:#667">القطعة: ${n(p / k)}</small>` : ''; };
+function unitList() { const s = new Set(['قطعة']); q("select distinct unit from items where unit is not null and unit<>''").forEach(r => s.add(r.unit)); return [...s]; }
+const unitOpts = () => unitList().map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join('') + '<option value="__new">➕ كرتونة جديدة (اكتب عدد القطع)</option><option value="__oth">✏️ وحدة أخرى (اكتب اسمها)</option>';
+function unitSel() {
+  const s = $('#i_us').value, un = $('#i_un'), ut = $('#i_ut');
+  un.style.display = s == '__new' ? '' : 'none'; ut.style.display = s == '__oth' ? '' : 'none';
+  let u = s;
+  if (s == '__new') { const k = Math.floor(+un.value || 0); u = k > 0 ? 'كرتونة ' + k + 'ق' : ''; } else if (s == '__oth') u = ut.value.trim();
+  $('#i_unit').value = u; unitPrices();
+}
+function unitSync() {
+  const u = $('#i_unit').value || 'قطعة', s = $('#i_us');
+  if (![...s.options].some(o => o.value == u)) { const o = document.createElement('option'); o.value = u; o.textContent = u; s.insertBefore(o, s.querySelector('option[value="__new"]')); }
+  s.value = u; unitSel();
+}
+function unitPrices() {
+  const k = pcs($('#i_unit').value);
+  ['i_pu', 'i_pw', 'i_pd'].forEach(id => { const v = +$('#' + id).value || 0, e = $('#' + id + '_u'); if (e) e.textContent = k > 0 && v > 0 ? 'سعر القطعة: ' + n(v / k) : ''; });
+}
+function itemPick() {
+  const nm = g('i_name'); if (!nm) return;
+  const it = q('select * from items where name=?', [nm])[0]; if (!it || g('i_id') == String(it.id)) return;
+  editItem(it.id); toast('الصنف موجود — اتحمّلت بياناته للتعديل ✏️');
+}
+AFTER.items = () => { unitSync(); unitPrices(); };
 function editItem(id) {
   const i = q('select * from items where id=?', [id])[0];
-  $('#i_id').value = id; $('#i_code').value = i.code; $('#i_name').value = i.name; $('#i_unit').value = i.unit;
-  $('#i_pu').value = i.p_user; $('#i_pw').value = i.p_whole; $('#i_pd').value = i.p_dist; $('#i_cm').value = i.comm || 0; scrollTo(0, 0);
+  $('#i_id').value = id; $('#i_code').value = i.code; $('#i_name').value = i.name; $('#i_unit').value = i.unit; unitSync();
+  $('#i_pu').value = i.p_user; $('#i_pw').value = i.p_whole; $('#i_pd').value = i.p_dist; $('#i_cm').value = i.comm || 0; unitPrices(); scrollTo(0, 0);
 }
 function saveItem() {
-  const id = g('i_id'), v = [g('i_code'), g('i_name'), g('i_unit') || 'قطعة', +g('i_pu') || 0, +g('i_pw') || 0, +g('i_pd') || 0];
+  let id = g('i_id'); const v = [g('i_code'), g('i_name'), g('i_unit') || 'قطعة', +g('i_pu') || 0, +g('i_pw') || 0, +g('i_pd') || 0];
   if (!v[1]) return toast('اكتب اسم الصنف', 'e');
+  if ($('#i_us').value == '__new' && !(+g('i_un') > 0)) return toast('اكتب عدد القطع داخل الكرتونة', 'e');
+  if ($('#i_us').value == '__oth' && !g('i_ut')) return toast('اكتب اسم الوحدة', 'e');
+  if (!id) { const ex = q('select id from items where name=?', [v[1]])[0]; if (ex) id = String(ex.id); }
   const d = g('i_d') || today(), note = g('i_pn'), T = [['p_user', 'يوزر'], ['p_whole', 'جملة'], ['p_dist', 'موزع']];
   if (id) {
     const o = q('select * from items where id=?', [id])[0];
@@ -856,12 +889,29 @@ const GUIDE = [
  ['📦 الأصناف والأسعار', 'هنا بتعرّف البضاعة وأسعارها.', [
   ['كود الصنف', 'رمز اختياري للتمييز (مثلًا رقم الصنف في كشف الشركة).'],
   ['اسم الصنف *', 'إجباري. هو اللي هيظهر في الفاتورة والتقارير.'],
-  ['الوحدة', 'كرتونة، كيس، قطعة... بتظهر جنب الكمية في الفاتورة.'],
+  ['الوحدة', 'قائمة فيها «قطعة» والوحدات اللي سجلتها قبل كده. لو الصنف كرتونة جديدة اختار «➕ كرتونة جديدة» واكتب جنبها عدد القطع اللي جواها (مثلًا 12) فتتسجل «كرتونة 12ق» وتظهر في القائمة المرة الجاية. «✏️ وحدة أخرى» لأي وحدة تانية (كيس، دستة...). بتظهر جنب الكمية في الفاتورة.'],
+  ['سعر القطعة (تحت كل سعر)', 'لو الوحدة كرتونة بعدد قطع، السعر المكتوب هو سعر الكرتونة كلها، والبرنامج بيقسمه على عدد القطع ويوريك سعر القطعة الواحدة تحت كل سعر (يوزر / جملة / موزع) للعلم فقط.'],
+  ['اسم الصنف (قائمة منسدلة)', 'اضغط على الخانة وهتظهر أسماء الأصناف. لو اخترت صنف موجود البرنامج بيجيب كوده ووحدته وأسعاره لوحده عشان تعدّلها. لو كتبت اسم جديد هيتسجل صنف جديد. وكتابة اسم موجود بتتعامل كتعديل مش تكرار.'],
   ['سعر يوزر / جملة / موزع', 'تلات أسعار لنفس الصنف. البرنامج بيختار واحد منهم تلقائي في الفاتورة حسب إجمالي كمية الفاتورة.'],
   ['سريان السعر من تاريخ', 'التاريخ اللي بدأ فيه السعر الجديد. بيتسجل في «سجل الأسعار».'],
   ['سبب/ملاحظة تغيير السعر', 'مثلًا «زيادة من الشركة». مفيدة لما ترجع تراجع السجل.'],
   ['عمولة المندوب على الوحدة', 'مبلغ بتاخده عن كل وحدة بتتباع من الصنف. بيُستخدم بس لو طريقة العمولة «مبلغ على الوحدة».'],
   ['حفظ / تعديل / حذف', 'عند تعديل سعر البرنامج بيسجل القديم والجديد. الفواتير القديمة بتفضل بسعرها وقت البيع. الصنف اللي عليه مبيعات ما ينفعش يتحذف.']]],
+
+ ['👛 المحفظة (عدّاد الفلوس)', 'عدّاد بتعد بيه الفلوس اللي بتستلمها من كل عميل بالفئات، وبيجمعلك اليوم كله ويقارنه بالنظام. بيتسجل في الجداول اللي في البرنامج ومفيش حاجة تانية بتتأثر غير لو سجلت التسليم بنفسك.', [
+  ['الجدول الأول: العدّاد', 'جنب كل فئة (200 و100 و50 و20 و10 و5 و1) اكتب عدد الأوراق اللي استلمتها. بيظهر مجموع الفئة وتحتهم إجمالي المستلم لحظيًا.'],
+  ['اسم العميل', 'اختار من العملاء المسجلين أو اكتب أي اسم. لو سيبته فاضي بيتسجل «بدون اسم».'],
+  ['نوع العملية', 'بيع أو تحصيل أو عربون أو أخرى. ملخص اليوم بيجمع كل نوع لوحده.'],
+  ['رجّعت باقي للعميل؟', 'لو العميل دفع ورقة أكبر وإديته باقي، افتح الخانة دي واكتب عدد الأوراق اللي رجّعتها. الصافي = المستلم − الباقي، وفئات الباقي بتتخصم من اليوم.'],
+  ['زرار «تم / حفظ»', 'بيحفظ العملية في جدول اليوم ويفضّي العدّاد للعميل اللي بعده.'],
+  ['الجدول التاني: اليوم', 'سطر لكل عميل بفئاته ومجموعه، وتحتهم إجمالي عدد كل فئة وقيمتها وإجمالي اليوم. الرقم السالب في فئة معناه إنك رجّعتها كباقي أكتر مما استلمت.'],
+  ['تعديل / حذف عملية', '«تعديل» بيرجّع العملية للعدّاد فوق فتغيّرها وتضغط «تم / حفظ». «حذف» بيشيلها وكل المجاميع بتتصحح لوحدها.'],
+  ['مقارنة بالنظام', 'بتقارن اللي في المحفظة بالنقدي المسجل في النظام بنفس التاريخ (فواتير نقدي + تحصيل + عربون). لو المحفظة أقل بيظهر «عجز»، ولو أكتر بيظهر «زيادة»، ولو متساويين «مطابق».'],
+  ['رصيد أول اليوم', 'الفئات اللي كانت معاك من اليوم اللي فات. بيتنقل لوحده من متبقي آخر يوم وتقدر تعدّله من «رصيد أول اليوم والتسليم للشركة».'],
+  ['التسليم للشركة', 'اكتب الفئات اللي سلّمتها لأمين الخزنة أو اضغط «تسليم كل اللي معايا». بيتخصم من المتبقي. زرار «سجّل التسليم في تسليم النقدية» بيضيف المبلغ في صفحة تسليم النقدية؛ متضغطوش لو سجلته هناك بإيدك عشان ميتكررش.'],
+  ['🌅 يوم جديد', 'بيحفظ اليوم في السجل ويفضّي الجدولين ويفتح يوم جديد، والمتبقي معاك بيتنقل رصيد أول اليوم. بيسألك قبل ما ينفّذ.'],
+  ['📚 سجل الأيام', 'كل يوم بتاريخه وعدد عملياته والمستلم والفرق مع النظام. «عرض / تعديل» بيفتح اليوم القديم وتقدر تعدّل فيه، و«حذف» بيمسحه نهائيًا.'],
+  ['تاريخ اليوم', 'بيتسجل تاريخ النهارده تلقائي. لو نسيت تقفل اليوم وفتحته تاني يوم، عدّل التاريخ من فوق عشان المقارنة تطلع صح.']]],
  ['👥 العملاء', 'ملف كل عميل بتتعامل معاه.', [
   ['اسم العميل *', 'إجباري.'], ['التليفون / العنوان', 'بيتملّوا تلقائي في الفاتورة، ويُستخدموا في البحث السريع.'],
   ['سقف الدين', 'أقصى مبلغ آجل مسموح للعميل. صفر = بدون حد. لو فاتورة هتعدّي السقف البرنامج بيحذرك قبل الحفظ.'],
@@ -1088,5 +1138,133 @@ function restore(inp) {
   const r = new FileReader(); r.onload = () => { try { const d = new SQLm.Database(new Uint8Array(r.result)); d.run(SCHEMA); db = d; loadS(); migrate(); save(); toast('تم الاسترجاع ✅'); go('dash'); } catch (e) { toast('الملف غير صالح', 'e'); } };
   r.readAsArrayBuffer(f);
 }
+
+// ===== المحفظة (عدّاد الفلوس) =====
+const DEN = [200, 100, 50, 20, 10, 5, 1], WKINDS = ['بيع', 'تحصيل', 'عربون', 'أخرى'];
+let WV = null;
+const wj = s => { try { return JSON.parse(s) || {}; } catch (e) { return {}; } };
+const wsum = o => DEN.reduce((s, d) => s + d * (+o[d] || 0), 0);
+function wcalc(day) {
+  const es = q('select * from wallet_entries where day_id=? order by id', [day.id]).map(e => ({...e, rec: wj(e.rec_json), chg: wj(e.chg_json)}));
+  const open = wj(day.open_json), hand = wj(day.hand_json), tot = {}, all = {}, left = {}, kinds = {};
+  DEN.forEach(d => { tot[d] = es.reduce((s, e) => s + (+e.rec[d] || 0) - (+e.chg[d] || 0), 0); all[d] = (+open[d] || 0) + tot[d]; left[d] = all[d] - (+hand[d] || 0); });
+  es.forEach(e => kinds[e.kind] = (kinds[e.kind] || 0) + e.amount);
+  return {es, open, hand, tot, all, left, kinds, recv: wsum(tot), openAmt: wsum(open), allAmt: wsum(all), handAmt: wsum(hand), leftAmt: wsum(left)};
+}
+function wCur() {
+  let r = q('select * from wallet_days where closed=0 order by id desc limit 1')[0];
+  if (!r) {
+    const pv = q('select * from wallet_days order by id desc limit 1')[0], lf = pv ? wcalc(pv).left : {}, o = {};
+    DEN.forEach(d => { if (lf[d] > 0) o[d] = lf[d]; });
+    db.run('insert into wallet_days(d,open_json,hand_json,closed) values(?,?,?,0)', [today(), JSON.stringify(o), '{}']); save();
+    r = q('select * from wallet_days where closed=0 order by id desc limit 1')[0];
+  }
+  return r;
+}
+const wDay = () => { if (WV) { const r = q('select * from wallet_days where id=?', [WV])[0]; if (r) return r; WV = null; } return wCur(); };
+const wCell = v => `<td>${v ? n(v) : ''}</td>`;
+function wForm() {
+  const row = (p, d) => `<tr><td><b>${d}</b></td><td><input id="${p}${d}" type="number" min="0" inputmode="numeric" oninput="wCalc()" style="max-width:120px"></td><td id="${p}t${d}">0</td></tr>`;
+  return `<div class="card np"><input type="hidden" id="w_eid"><div id="w_ed" class="hint" style="display:none"></div>
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));align-items:start">
+   <div><table><tr><th>الفئة</th><th>العدد</th><th>المجموع</th></tr>${DEN.map(d => row('w_r', d)).join('')}<tr><th>إجمالي المستلم</th><th></th><th id="w_rtot">0</th></tr></table>
+    <details id="w_chg" style="margin-top:8px"><summary>↩️ رجّعت باقي للعميل؟ (اختياري)</summary><table><tr><th>الفئة</th><th>عدد الباقي</th><th>المجموع</th></tr>${DEN.map(d => row('w_c', d)).join('')}<tr><th>إجمالي الباقي</th><th></th><th id="w_ctot">0</th></tr></table></details>
+    <p>الصافي اللي دخل المحفظة: <b class="stat" id="w_net">0</b> ${esc(S.cur)}</p></div>
+   <div><label>اسم العميل</label><input id="w_cu" list="w_dl" autocomplete="off" placeholder="اختار من العملاء أو اكتب اسم"><datalist id="w_dl">${q('select name from customers order by name').map(c => `<option value="${esc(c.name)}">`).join('')}</datalist>
+    <label style="margin-top:8px">نوع العملية</label><select id="w_k">${WKINDS.map(k => `<option>${k}</option>`).join('')}</select>
+    <label style="margin-top:8px">ملاحظة</label><input id="w_n">
+    <div class="bar"><button onclick="wSave()">✅ تم / حفظ</button><button class="g" onclick="go('wal')">🧹 مسح / إلغاء التعديل</button></div></div></div></div>`;
+}
+function wCalc() {
+  let a = 0, b = 0;
+  DEN.forEach(d => { const x = Math.max(0, +$('#w_r' + d).value || 0), y = Math.max(0, +$('#w_c' + d).value || 0); $('#w_rt' + d).textContent = n(x * d); $('#w_ct' + d).textContent = n(y * d); a += x * d; b += y * d; });
+  $('#w_rtot').textContent = n(a); $('#w_ctot').textContent = n(b); $('#w_net').textContent = n(a - b);
+}
+function wSave() {
+  const rec = {}, chg = {};
+  DEN.forEach(d => { const x = Math.floor(+$('#w_r' + d).value || 0), y = Math.floor(+$('#w_c' + d).value || 0); if (x > 0) rec[d] = x; if (y > 0) chg[d] = y; });
+  if (!wsum(rec)) return toast('اكتب عدد الفئات المستلمة الأول', 'e');
+  if (wsum(chg) > wsum(rec)) return toast('الباقي المردود أكبر من المستلم!', 'e');
+  const eid = g('w_eid'), v = [g('w_cu') || 'بدون اسم', g('w_k'), JSON.stringify(rec), JSON.stringify(chg), wsum(rec) - wsum(chg), g('w_n')];
+  if (eid) db.run('update wallet_entries set cust=?,kind=?,rec_json=?,chg_json=?,amount=?,note=? where id=?', [...v, eid]);
+  else db.run('insert into wallet_entries(day_id,cust,kind,rec_json,chg_json,amount,note) values(?,?,?,?,?,?,?)', [wDay().id, ...v]);
+  save(); toast(eid ? 'تم تعديل العملية ✅' : 'تم الحفظ ✅'); go('wal');
+}
+function wEdit(id) {
+  const e = q('select * from wallet_entries where id=?', [id])[0], r = wj(e.rec_json), c = wj(e.chg_json);
+  $('#w_eid').value = id; DEN.forEach(d => { $('#w_r' + d).value = r[d] || ''; $('#w_c' + d).value = c[d] || ''; });
+  $('#w_cu').value = e.cust; $('#w_k').value = e.kind; $('#w_n').value = e.note || ''; $('#w_chg').open = wsum(c) > 0;
+  const h = $('#w_ed'); h.style.display = 'block'; h.textContent = '✏️ بتعدّل عملية: ' + e.cust + ' — اضغط «تم / حفظ» لحفظ التعديل أو «مسح / إلغاء» للتراجع';
+  wCalc(); scrollTo(0, 0);
+}
+function wDel(id) { if (!confirm('حذف العملية؟')) return; db.run('delete from wallet_entries where id=?', [id]); save(); go('wal'); }
+function wDate(id, v) { if (!v) return; db.run('update wallet_days set d=? where id=?', [v, id]); save(); go('wal'); }
+function wNewDay() {
+  const day = wDay(), C = wcalc(day);
+  if (!confirm('إنهاء يوم ' + day.d + ' وحفظه في السجل (' + C.es.length + ' عملية، إجمالي ' + n(C.recv) + ')؟\nالجدولين هيتفضوا، والمتبقي معاك (' + n(C.leftAmt) + ') هيتنقل رصيد أول اليوم الجديد.')) return;
+  db.run('update wallet_days set closed=1 where id=?', [day.id]); WV = null; wCur(); save(); toast('تم حفظ اليوم وفتح يوم جديد 🌅'); go('wal');
+}
+function wDelDay(id) {
+  if (!confirm('حذف اليوم بكل عملياته من السجل؟ لا يمكن التراجع.')) return;
+  db.run('delete from wallet_entries where day_id=?', [id]); db.run('delete from wallet_days where id=?', [id]); if (WV == id) WV = null; save(); go('wal');
+}
+function wReadRow() {
+  const o = {}, h = {};
+  DEN.forEach(d => { const a = Math.floor(+$('#w_o' + d).value || 0), b = Math.floor(+$('#w_h' + d).value || 0); if (a > 0) o[d] = a; if (b > 0) h[d] = b; });
+  return {o, h};
+}
+function wSaveRow(id, quiet) {
+  const {o, h} = wReadRow(); db.run('update wallet_days set open_json=?,hand_json=? where id=?', [JSON.stringify(o), JSON.stringify(h), id]); save();
+  if (!quiet) { toast('تم حفظ الرصيد والتسليم ✅'); go('wal'); }
+}
+function wHandAll(id) {
+  wSaveRow(id, true); const day = q('select * from wallet_days where id=?', [id])[0], C = wcalc(day), h = {};
+  DEN.forEach(d => { if (C.all[d] > 0) h[d] = C.all[d]; });
+  db.run('update wallet_days set hand_json=? where id=?', [JSON.stringify(h), id]); save(); go('wal');
+}
+function wRegHand(id) {
+  wSaveRow(id, true); const day = q('select * from wallet_days where id=?', [id])[0], amt = wsum(wj(day.hand_json)), rc = g('w_hr');
+  if (!(amt > 0)) return toast('اكتب فئات التسليم الأول', 'e');
+  if (day.hand_id && q('select id from handovers where id=?', [day.hand_id])[0]) db.run('update handovers set d=?,amount=?,receiver=? where id=?', [day.d, amt, rc, day.hand_id]);
+  else { db.run('insert into handovers(d,amount,receiver,note) values(?,?,?,?)', [day.d, amt, rc, 'من المحفظة']); db.run('update wallet_days set hand_id=? where id=?', [q('select last_insert_rowid() r')[0].r, id]); }
+  save(); toast('اتسجل في «تسليم النقدية» ✅'); go('wal');
+}
+function wHandCard(day, C) {
+  const hr = day.hand_id ? (q('select receiver from handovers where id=?', [day.hand_id])[0] || {}).receiver || '' : '';
+  const inp = (p, o, d) => `<td><input id="${p}${d}" type="number" min="0" value="${o[d] || ''}" style="width:72px"></td>`;
+  return `<details class="card np"><summary><b>📤 رصيد أول اليوم والتسليم للشركة</b></summary>
+   <p class="sl">اكتب عدد كل فئة. رصيد أول اليوم بيتحط تلقائي من متبقي اليوم اللي فات وتقدر تعدّله. «سجّل التسليم في تسليم النقدية» بيضيف المبلغ في الصفحة دي؛ متضغطوش لو سجلته هناك بإيدك.</p>
+   <div style="overflow-x:auto"><table><tr><th></th>${DEN.map(d => `<th>${d}</th>`).join('')}</tr>
+   <tr><td>رصيد أول اليوم</td>${DEN.map(d => inp('w_o', C.open, d)).join('')}</tr>
+   <tr><td>سلّمت للشركة</td>${DEN.map(d => inp('w_h', C.hand, d)).join('')}</tr></table></div>
+   <div class="bar"><div><label>اسم المستلم (للتسليم)</label><input id="w_hr" value="${esc(hr)}"></div><button onclick="wSaveRow(${day.id})">💾 حفظ الرصيد والتسليم</button><button class="g" onclick="wHandAll(${day.id})">📦 تسليم كل اللي معايا</button><button class="g" onclick="wRegHand(${day.id})">🏦 سجّل التسليم في «تسليم النقدية»</button></div></details>`;
+}
+function wTable(day, C) {
+  const tr = (lbl, o, tot, st) => `<tr style="${st || ''}"><th colspan="3">${lbl}</th>${DEN.map(d => `<th>${o[d] ? n(o[d]) : ''}</th>`).join('')}<th>${n(tot)}</th><th class="np"></th></tr>`;
+  const val = {}; DEN.forEach(d => val[d] = C.tot[d] * d);
+  return `<div class="card" style="overflow-x:auto"><table><tr><th>#</th><th>العميل</th><th>النوع</th>${DEN.map(d => `<th>${d}</th>`).join('')}<th>المجموع</th><th class="np"></th></tr>` +
+   (C.es.length ? C.es.map((e, i) => `<tr><td>${i + 1}</td><td>${esc(e.cust)}${e.note ? `<br><small>${esc(e.note)}</small>` : ''}</td><td>${esc(e.kind)}</td>${DEN.map(d => wCell((+e.rec[d] || 0) - (+e.chg[d] || 0))).join('')}<td><b>${n(e.amount)}</b>${wsum(e.chg) ? `<br><small>مستلم ${n(wsum(e.rec))} − باقي ${n(wsum(e.chg))}</small>` : ''}</td><td class="np"><button class="s" onclick="wEdit(${e.id})">تعديل</button> <button class="s r" onclick="wDel(${e.id})">حذف</button></td></tr>`).join('') : `<tr><td colspan="${DEN.length + 5}" style="text-align:center;color:#667">لسه مفيش عمليات النهارده</td></tr>`) +
+   tr('إجمالي عدد الفئات (المستلم اليوم)', C.tot, C.recv, 'background:#eef1f7') + tr('قيمة كل فئة', val, C.recv) +
+   (C.openAmt ? tr('رصيد أول اليوم', C.open, C.openAmt) + tr('الإجمالي العام', C.all, C.allAmt) : '') +
+   (C.handAmt ? tr('سلّمت للشركة', C.hand, C.handAmt) : '') + tr('المتبقي معاك', C.left, C.leftAmt, 'background:#e8f5ee') + `</table></div>`;
+}
+function wLog(curId) {
+  const days = q('select * from wallet_days order by id desc'), walBy = {}, sysBy = {}, cs = days.map(d => wcalc(d));
+  days.forEach((d, i) => walBy[d.d] = (walBy[d.d] || 0) + cs[i].recv);
+  return `<h3>📚 سجل الأيام</h3><div style="overflow-x:auto"><table><tr><th>التاريخ</th><th>الحالة</th><th>عدد العمليات</th><th>المستلم</th><th>المسجل في النظام (كاش)</th><th>الفرق</th><th>التسليم</th><th>المتبقي</th><th class="np"></th></tr>` +
+   days.map((d, i) => { const C = cs[i]; if (sysBy[d.d] == null) sysBy[d.d] = cashStats(x => x == d.d).cashIn; const df = walBy[d.d] - sysBy[d.d];
+     return `<tr${d.id == curId ? ' style="background:#fff8e1"' : ''}><td>${d.d}</td><td>${d.closed ? '🔒 مقفول' : '🟢 مفتوح'}</td><td>${C.es.length}</td><td>${n(C.recv)}</td><td>${n(sysBy[d.d])}</td><td style="color:${Math.abs(df) < 0.005 ? '#1a8f4c' : df < 0 ? '#d1344a' : '#d98300'}">${Math.abs(df) < 0.005 ? 'مطابق' : df < 0 ? 'عجز ' + n(-df) : 'زيادة ' + n(df)}</td><td>${n(C.handAmt)}</td><td>${n(C.leftAmt)}</td><td class="np"><button class="s" onclick="WV=${d.id};go('wal');scrollTo(0,0)">عرض / تعديل</button> <button class="s r" onclick="wDelDay(${d.id})">حذف</button></td></tr>`; }).join('') + `</table></div>`;
+}
+PAGES.wal = () => {
+  const day = wDay(), C = wcalc(day), open = day.closed == 0;
+  const sys = cashStats(x => x == day.d).cashIn, wal = q('select * from wallet_days where d=?', [day.d]).reduce((s, r) => s + wcalc(r).recv, 0), df = wal - sys;
+  const dTxt = Math.abs(df) < 0.005 ? '<b style="color:#1a8f4c">✅ مطابق للنظام</b>' : df < 0 ? `<b style="color:#d1344a">⚠️ عجز ${n(-df)}</b> (المحفظة أقل من المسجل في النظام)` : `<b style="color:#d98300">⬆️ زيادة ${n(df)}</b> (المحفظة أكبر من المسجل في النظام)`;
+  const kinds = Object.keys(C.kinds).map(k => k + ': ' + n(C.kinds[k])).join(' — ');
+  return `<h1>👛 المحفظة (عدّاد الفلوس)</h1>` + hint('اكتب عدد كل فئة استلمتها من العميل، واكتب اسمه، واضغط «تم / حفظ»: العملية بتنتقل لجدول اليوم تحت وبتتجمع مع اللي قبلها، والعدّاد بيتفضى للعميل اللي بعده. تقدر تعدّل أو تحذف أي عملية. لو رجّعت باقي للعميل افتح «رجّعت باقي للعميل؟». البرنامج بيقارن مجموع المحفظة بالنقدي المسجل في فواتير وتحصيل نفس اليوم ويقولك فيه عجز ولا زيادة. آخر اليوم اضغط «يوم جديد» وهيتحفظ اليوم في السجل تحت.') +
+   `<div class="bar np"><div><label>تاريخ اليوم</label><input type="date" id="w_dd" value="${day.d}" onchange="wDate(${day.id},this.value)"></div>${open ? '<button onclick="wNewDay()">🌅 يوم جديد</button>' : '<button class="g" onclick="WV=null;go(\'wal\')">↩️ الرجوع لليوم الحالي</button>'}<span>${open ? '🟢 اليوم الحالي (مفتوح)' : '🔒 بتعرض يوم قديم من السجل — أي عملية هتضيفها هتتسجل عليه'}</span></div>` +
+   `<div class="grid"><div class="card"><div class="stat">${n(C.recv)}</div><div class="sl">المستلم (${C.es.length} عملية)</div></div><div class="card"><div class="stat">${n(C.openAmt)}</div><div class="sl">رصيد أول اليوم</div></div><div class="card"><div class="stat">${n(C.handAmt)}</div><div class="sl">سلّمته للشركة</div></div><div class="card"><div class="stat" style="color:#1a8f4c">${n(C.leftAmt)}</div><div class="sl">المتبقي معاك (${esc(S.cur)})</div></div></div>` +
+   `<div class="card">🔍 <b>مقارنة بالنظام (${day.d}):</b> المحفظة ${n(wal)} — المسجل كاش في النظام ${n(sys)} ← ${dTxt}${kinds ? `<br><small>حسب النوع: ${kinds}</small>` : ''}</div>` +
+   wForm() + `<h3>📋 جدول اليوم</h3>` + wTable(day, C) + wHandCard(day, C) + wLog(day.id);
+};
 init().catch(e => { $('#main').innerHTML = '<div class="card" style="color:#d1344a">تعذّر تشغيل البرنامج: ' + esc((e && e.message) || e) + '</div>'; });
 </script></body></html>

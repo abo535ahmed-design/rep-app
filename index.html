@@ -310,7 +310,7 @@ CREATE TABLE IF NOT EXISTS wallet_entries(id INTEGER PRIMARY KEY, day_id INT, cu
 const DEF = {company: 'اسم الشركة', rep: '', color: '#1f6feb', t_user: 30, t_whole: 50, warn_days: 3, inv_start: 1, cur: 'جنيه', logo: '', zoom_main: 100, zoom_sb: 100, base: 0, comm_mode: 'sales', comm_rate: 0, side: '#1b2433', menu_cfg: '{}'};
 function loadS() { S = {...DEF}; q('select * from settings').forEach(r => S[r.k] = r.v); document.documentElement.style.setProperty('--c', S.color); document.documentElement.style.setProperty('--sb', S.side);
   [['#main', S.zoom_main], ['#pv', S.zoom_main], ['#sb', S.zoom_sb]].forEach(([s, z]) => { const e = $(s); if (e) e.style.zoom = (+z || 100) / 100; }); }
-function bal(itemId) { return q("select coalesce(sum(case kind when 'in' then qty else -qty end),0) - coalesce((select sum(qty) from inv_lines where item_id=?),0) + coalesce((select sum(qty) from returns where item_id=?),0) b from custody where item_id=?", [itemId, itemId, itemId])[0].b; }
+function bal(itemId) { return q("select coalesce(sum(case kind when 'in' then qty else -qty end),0) - coalesce((select sum(coalesce(bq,qty)) from inv_lines where item_id=?),0) + coalesce((select sum(qty) from returns where item_id=?),0) b from custody where item_id=?", [itemId, itemId, itemId])[0].b; }
 
 document.body.addEventListener('click', e => { if (document.body.classList.contains('mo') && !e.target.closest('#sb') && !e.target.closest('#tb')) document.body.classList.remove('mo'); });
 if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) { navigator.serviceWorker.register('sw.js').catch(() => {}); }
@@ -412,6 +412,9 @@ function itemPick() {
   editItem(it.id); toast('الصنف موجود — اتحمّلت بياناته للتعديل ✏️');
 }
 AFTER.items = () => { unitSync(); unitPrices(); };
+const fb = (i, b, noU) => { const k = pcs(i.unit), w = Math.floor(b + 1e-9), r = Math.round((b - w) * k); return k > 0 && r > 0 && r < k ? (w ? w + ' كرتونة و ' : '') + r + ' قطعة' : n(b) + (noU ? '' : ' ' + (i.unit || '')); };
+function nuSync() { const i = q('select unit from items where id=?', [g('n_i') || 0])[0], on = i && pcs(i.unit) > 0; $('#n_ub').style.display = on ? '' : 'none'; if (!on) $('#n_u').value = 'c'; }
+const _an = AFTER.new; AFTER.new = () => { _an(); $('#n_i').onchange = nuSync; nuSync(); };
 function editItem(id) {
   const i = q('select * from items where id=?', [id])[0];
   $('#i_id').value = id; $('#i_code').value = i.code; $('#i_name').value = i.name; $('#i_unit').value = i.unit; unitSync();
@@ -477,7 +480,7 @@ PAGES.custody = () => {
    <div><label>الكمية *</label><input id="k_q" type="number" step="any"></div><div><label>ملاحظات</label><input id="k_n"></div></div>
    <div class="bar"><button onclick="saveK()">💾 حفظ الحركة</button><button class="g" onclick="go('custody')">جديد / إلغاء</button><button class="g" onclick="window.print()">🖨️ طباعة</button></div></div>
    <div class="card"><b>رصيد العهدة الحالي</b><table><tr><th>الصنف</th><th>الرصيد</th><th>قيمته بسعر يوزر</th></tr>` +
-   items.map(i => `<tr><td>${esc(i.name)}</td><td>${n(bal(i.id))}</td><td>${n(bal(i.id) * i.p_user)}</td></tr>`).join('') + `</table></div>
+   items.map(i => `<tr><td>${esc(i.name)}</td><td>${fb(i, bal(i.id), 1)}</td><td>${n(bal(i.id) * i.p_user)}</td></tr>`).join('') + `</table></div>
    <table><tr><th>التاريخ</th><th>الحركة</th><th>الصنف</th><th>الكمية</th><th>ملاحظات</th><th class="np"></th></tr>` +
   q('select k.*,i.name from custody k left join items i on i.id=k.item_id order by k.d desc,k.id desc').map(k => `<tr><td>${k.d}</td><td>${k.kind == 'in' ? 'استلام' : 'رد للشركة'}</td><td>${esc(k.name)}</td><td>${n(k.qty)}</td><td>${esc(k.note)}</td>
    <td class="np"><button class="s" onclick="editK(${k.id})">تعديل</button> <button class="s r" onclick="delK(${k.id})">حذف</button></td></tr>`).join('') + `</table>`;
@@ -523,8 +526,8 @@ PAGES.new = () => {
    <div><label>المسدد من الفاتورة (للآجل)</label><input id="v_paid" type="number" step="any" value="0" oninput="drawTot()"></div>
    <div><label>الخصم</label><div style="display:flex;gap:4px"><select id="v_dt" onchange="drawTot()" style="width:80px"><option value="a">مبلغ</option><option value="p">%</option></select><input id="v_dv" type="number" step="any" value="0" oninput="drawTot()"></div></div>
    <div><label>خصم من العربون (المتاح: <b id="v_depav">0</b>)</label><input id="v_dep" type="number" step="any" value="0" oninput="drawTot()"></div><div><label>ملاحظات</label><input id="v_nt"></div></div></div>
-   <div class="card np"><div class="bar"><div><label>الصنف</label><select id="n_i">${items.map(i => `<option value="${i.id}">${esc(i.name)} (رصيد ${n(bal(i.id))})</option>`).join('')}</select></div>
-   <div><label>الكمية</label><input id="n_q" type="number" step="any" value="1"></div><button onclick="addLine()">➕ إضافة للفاتورة</button></div>
+   <div class="card np"><div class="bar"><div><label>الصنف</label><select id="n_i">${items.map(i => `<option value="${i.id}">${esc(i.name)} (رصيد ${fb(i, bal(i.id))})</option>`).join('')}</select></div>
+   <div id="n_ub" style="display:none"><label>بيع بـ</label><select id="n_u"><option value="c">كرتونة</option><option value="p">قطعة</option></select></div><div><label>الكمية</label><input id="n_q" type="number" step="any" value="1"></div><button onclick="addLine()">➕ إضافة للفاتورة</button></div>
    <div id="lines"></div><div id="tot"></div>
    <div class="bar"><button onclick="saveInv()">💾 حفظ وعرض الفاتورة</button><button class="g" onclick="INV={id:0,lines:[],h:null};go('new')">فاتورة جديدة / إلغاء</button></div></div>`;
 };
@@ -543,11 +546,13 @@ function quickCust() {
   db.run('insert into customers(name,phone,addr,credit_limit,notes) values(?,?,?,0,?)', [nm, g('v_ph'), g('v_ad'), '']);
   $('#v_c').value = q('select last_insert_rowid() r')[0].r; $('#v_nm').value = nm; save(); toast('تم حفظ العميل الجديد ✅');
 }
-const invQty = () => INV.lines.reduce((s, l) => s + l.qty, 0);
-function reprice() { const tr = tierOf(invQty()); INV.lines.forEach(l => { l.tier = tr; if (!l.manual) { const i = q('select * from items where id=?', [l.item_id])[0]; if (i) l.price = i[TK[tr]]; } }); }
+const lineN = l => { if (l.unit != 'قطعة') return 1; const it = q('select unit from items where id=?', [l.item_id])[0], k = it ? pcs(it.unit) : 0; return k > 0 ? k : 1; };
+const baseQ = l => l.qty / lineN(l);
+const invQty = () => INV.lines.reduce((s, l) => s + baseQ(l), 0);
+function reprice() { const tr = tierOf(invQty()); INV.lines.forEach(l => { l.tier = tr; if (!l.manual) { const i = q('select * from items where id=?', [l.item_id])[0]; if (i) l.price = Math.round(i[TK[tr]] / lineN(l) * 100) / 100; } }); }
 function addLine() {
   const i = q('select * from items where id=?', [g('n_i') || 0])[0], qty = +g('n_q'); if (!i) return toast('اختار صنف', 'e'); if (!(qty > 0)) return toast('اكتب كمية صحيحة', 'e');
-  INV.lines.push({item_id: i.id, name: i.name, unit: i.unit, qty, tier: '', price: 0, manual: false}); drawLines();
+  const pc = $('#n_u') && $('#n_u').value == 'p' && pcs(i.unit) > 0; INV.lines.push({item_id: i.id, name: i.name, unit: pc ? 'قطعة' : i.unit, qty, tier: '', price: 0, manual: false}); drawLines();
 }
 function setQty(k, v) { INV.lines[k].qty = +v || 0; drawLines(); }
 function setPrice(k, v) { INV.lines[k].price = +v || 0; INV.lines[k].manual = true; drawLines(); }
@@ -568,9 +573,9 @@ function renumber() { q('select id from invoices order by id').forEach((r, i) =>
 function saveInv() {
   if (!INV.lines.length) return toast('أضف صنف واحد على الأقل', 'e');
   if (INV.lines.some(l => !(l.qty > 0))) return toast('فيه سطر كميته صفر', 'e');
-  const prev = {}; if (INV.id) q('select item_id,sum(qty) s from inv_lines where inv_id=? group by item_id', [INV.id]).forEach(r => prev[r.item_id] = r.s);
-  const need = {}; INV.lines.forEach(l => need[l.item_id] = (need[l.item_id] || 0) + l.qty);
-  for (const id in need) if (need[id] > bal(id) + (prev[id] || 0)) return toast('الكمية أكبر من العهدة المتاحة للصنف: ' + INV.lines.find(l => l.item_id == id).name, 'e');
+  const prev = {}; if (INV.id) q('select item_id,sum(coalesce(bq,qty)) s from inv_lines where inv_id=? group by item_id', [INV.id]).forEach(r => prev[r.item_id] = r.s);
+  const need = {}; INV.lines.forEach(l => need[l.item_id] = (need[l.item_id] || 0) + baseQ(l));
+  for (const id in need) if (need[id] > bal(id) + (prev[id] || 0) + 1e-9) return toast('الكمية أكبر من العهدة المتاحة للصنف: ' + INV.lines.find(l => l.item_id == id).name, 'e');
   const t = calc(), pay = g('v_pay'), d = g('v_d') || today(), days = pay == 'credit' ? (+g('v_days') || 30) : 0, cid = g('v_c') || null, nm = g('v_nm');
   if (!nm) return toast('اكتب اسم العميل', 'e');
   if (cid && t.rem > 0) { const c = q('select * from customers where id=?', [cid])[0];
@@ -580,7 +585,7 @@ function saveInv() {
   let id = INV.id;
   if (id) { db.run('update invoices set d=?,cust_id=?,cust_name=?,phone=?,addr=?,pay=?,days=?,due=?,sub=?,disc=?,total=?,paid=?,note=?,tier=?,paid0=? where id=?', [...v, id]); db.run('delete from inv_lines where inv_id=?', [id]); }
   else { db.run('insert into invoices(d,cust_id,cust_name,phone,addr,pay,days,due,sub,disc,total,paid,note,tier,paid0) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', v); id = q('select last_insert_rowid() r')[0].r; }
-  INV.lines.forEach(l => db.run('insert into inv_lines(inv_id,item_id,name,unit,qty,tier,price) values(?,?,?,?,?,?,?)', [id, l.item_id, l.name, l.unit, l.qty, l.tier, l.price]));
+  INV.lines.forEach(l => db.run('insert into inv_lines(inv_id,item_id,name,unit,qty,tier,price,bq) values(?,?,?,?,?,?,?,?)', [id, l.item_id, l.name, l.unit, l.qty, l.tier, l.price, baseQ(l)]));
   db.run("delete from payments where inv_id=? and method='عربون'", [id]); if (t.dep > 0.001) db.run('insert into payments(inv_id,d,amount,method,note) values(?,?,?,?,?)', [id, d, t.dep, 'عربون', 'خصم من العربون']);
   refPaid(id); renumber(); save(); INV = {id: 0, lines: [], h: null}; toast('تم حفظ الفاتورة ✅'); go('reg'); showInv(id);
 }
@@ -614,7 +619,7 @@ PAGES.reg = () => {
 
 // ===== الجلسة 3: تحصيل، مرتجعات، كشوف، رئيسية =====
 function migrate() {
-  [['invoices', 'tier TEXT'], ['invoices', 'paid0 REAL'], ['items', 'comm REAL']].forEach(([tb, c]) => { try { db.run(`ALTER TABLE ${tb} ADD COLUMN ${c}`); } catch (e) {} });
+  [['invoices', 'tier TEXT'], ['invoices', 'paid0 REAL'], ['items', 'comm REAL'], ['inv_lines', 'bq REAL']].forEach(([tb, c]) => { try { db.run(`ALTER TABLE ${tb} ADD COLUMN ${c}`); } catch (e) {} });
   db.run('update invoices set paid0=paid where paid0 is null');
   q('select id from invoices where tier is null').forEach(r => db.run('update invoices set tier=? where id=?', [tierOf(q('select coalesce(sum(qty),0) s from inv_lines where inv_id=?', [r.id])[0].s), r.id]));
 }
@@ -627,7 +632,7 @@ AFTER.custs = () => { $('#f_c').value = CF.c; };
 
 PAGES.dash = () => {
   const it = q('select * from items order by name'); let vu = 0, vw = 0, vd = 0;
-  const rows = it.map(i => { const b = bal(i.id); vu += b * i.p_user; vw += b * i.p_whole; vd += b * i.p_dist; return `<tr><td>${esc(i.name)}</td><td>${n(b)} ${esc(i.unit)}</td></tr>`; }).join('');
+  const rows = it.map(i => { const b = bal(i.id); vu += b * i.p_user; vw += b * i.p_whole; vd += b * i.p_dist; return `<tr><td>${esc(i.name)}</td><td>${fb(i, b)}</td></tr>`; }).join('');
   const cl = {'يوزر': 0, 'جملة': 0, 'موزع': 0, '—': 0}; const all = q('select id from customers'); all.forEach(c => cl[custCls(c.id)]++);
   const iv = q('select coalesce(sum(total),0) s, coalesce(sum(total-paid),0) r from invoices')[0];
   const due = q(`select count(*) c from invoices where total-paid>0.001 and due<=?`, [addDays(today(), +S.warn_days)])[0].c;
@@ -635,7 +640,7 @@ PAGES.dash = () => {
   const card = (v, l) => `<div class="card"><div class="stat">${v}</div><div class="sl">${l}</div></div>`;
   return `<h1>الرئيسية</h1>` + hint('ملخص سريع: أرصدة الأصناف في عهدتك، وعدد العملاء حسب التصنيف (التصنيف بيتحدد من مستوى آخر فاتورة للعميل)، وقيمة العهدة بالأسعار التلاتة، وإجمالي المبيعات والمتبقي على العملاء.') +
    (due ? `<div class="card" style="border:2px solid #d1344a">🔔 عندك <b>${due}</b> فاتورة آجل مستحقة أو متأخرة — شوفها من «سجل الفواتير» أو «التحصيل».</div>` : '') +
-   `<h3>📦 رصيد كل صنف في العهدة</h3><div class="grid">${it.map(i => { const b = bal(i.id); return `<div class="card" style="border-right:6px solid ${b <= 0 ? '#d1344a' : 'var(--c)'}"><div class="stat">${n(b)}</div><div class="sl">${esc(i.name)} (${esc(i.unit)})${b <= 0 ? ' — خلص!' : ''}</div></div>`; }).join('')}</div><h3>ملخص عام</h3><div class="grid">${card(it.length, 'عدد الأصناف')}${card(all.length, 'عدد العملاء')}${card(cl['يوزر'] + ' / ' + cl['جملة'] + ' / ' + cl['موزع'], 'يوزر / جملة / موزع' + (cl['—'] ? ' (+' + cl['—'] + ' بدون فواتير)' : ''))}
+   `<h3>📦 رصيد كل صنف في العهدة</h3><div class="grid">${it.map(i => { const b = bal(i.id); return `<div class="card" style="border-right:6px solid ${b <= 0 ? '#d1344a' : 'var(--c)'}"><div class="stat">${fb(i, b, 1)}</div><div class="sl">${esc(i.name)} (${esc(i.unit)})${b <= 0 ? ' — خلص!' : ''}</div></div>`; }).join('')}</div><h3>ملخص عام</h3><div class="grid">${card(it.length, 'عدد الأصناف')}${card(all.length, 'عدد العملاء')}${card(cl['يوزر'] + ' / ' + cl['جملة'] + ' / ' + cl['موزع'], 'يوزر / جملة / موزع' + (cl['—'] ? ' (+' + cl['—'] + ' بدون فواتير)' : ''))}
    ${card(n(vu), 'قيمة العهدة بسعر يوزر')}${card(n(vw), 'قيمة العهدة بسعر جملة')}${card(n(vd), 'قيمة العهدة بسعر موزع')}${card(n(iv.s), 'إجمالي المبيعات (' + esc(S.cur) + ')')}${card(n(iv.r), 'المتبقي على العملاء')}${card(n(oldTotal), 'مديونيات قديمة متبقية')}${card(n(depTotal), 'عربون محتفظ به للعملاء')}</div>
    `;
 };
@@ -684,7 +689,7 @@ function retFill() {
 function saveRet() {
   const inv = g('t_i') || null, it = g('t_it'), qty = +g('t_q'), price = +g('t_p') || 0, nm = g('t_c');
   if (!it) return toast('اختار الصنف', 'e'); if (!(qty > 0)) return toast('اكتب كمية صحيحة', 'e'); if (!nm) return toast('اكتب اسم العميل', 'e');
-  if (inv) { const sold = q('select coalesce(sum(qty),0) s from inv_lines where inv_id=? and item_id=?', [inv, it])[0].s, back = q('select coalesce(sum(qty),0) s from returns where inv_id=? and item_id=?', [inv, it])[0].s;
+  if (inv) { const sold = q('select coalesce(sum(coalesce(bq,qty)),0) s from inv_lines where inv_id=? and item_id=?', [inv, it])[0].s, back = q('select coalesce(sum(qty),0) s from returns where inv_id=? and item_id=?', [inv, it])[0].s;
     if (qty > sold - back) return toast('الكمية أكبر من المباع في الفاتورة (المتاح للرجوع: ' + n(sold - back) + ')', 'e'); }
   const item = q('select name from items where id=?', [it])[0], settle = g('t_s');
   db.run('insert into returns(d,inv_id,cust_name,item_id,name,qty,price,reason,settle,note) values(?,?,?,?,?,?,?,?,?,?)', [g('t_d') || today(), inv, nm, it, item.name, qty, price, g('t_r'), settle, g('t_n')]);
@@ -722,7 +727,7 @@ PAGES.card = () => {
     const id = CD.i, it = q('select * from items where id=?', [id])[0];
     let rows = q(`select d,'استلام عهدة' t,'' who,qty a,0 b,note n,id k from custody where item_id=? and kind='in'
       union all select d,'رد للشركة','',0,qty,note,id from custody where item_id=? and kind='out'
-      union all select i.d,'بيع — فاتورة #'||i.no,i.cust_name,0,l.qty,'',l.id from inv_lines l join invoices i on i.id=l.inv_id where l.item_id=?
+      union all select i.d,'بيع — فاتورة #'||i.no,i.cust_name,0,coalesce(l.bq,l.qty),'',l.id from inv_lines l join invoices i on i.id=l.inv_id where l.item_id=?
       union all select d,'مرتجع ('||reason||')',cust_name,qty,0,'',id from returns where item_id=? order by d,k`, [id, id, id, id]);
     let b = 0, sold = 0, back = 0; rows = rows.map(r => { b += r.a - r.b; if (r.t.startsWith('بيع')) sold += r.b; if (r.t.startsWith('مرتجع')) back += r.a; return {...r, b}; })
       .filter(r => (!CD.f || r.d >= CD.f) && (!CD.t || r.d <= CD.t));
@@ -786,12 +791,12 @@ PAGES.rep = () => {
   const byPay = {cash: 0, transfer: 0, credit: 0}; inv.forEach(r => byPay[r.pay] += r.total);
   const C = cashStats(inR), CA = cashStats(() => true), outst = q('select coalesce(sum(total-paid),0) s from invoices')[0].s;
   const items = q('select * from items order by name');
-  const lines = q('select i.d,l.item_id,l.qty,l.price from inv_lines l join invoices i on i.id=l.inv_id').filter(r => inR(r.d));
+  const lines = q('select i.d,l.item_id,l.qty,coalesce(l.bq,l.qty) bq,l.price from inv_lines l join invoices i on i.id=l.inv_id').filter(r => inR(r.d));
   const rets = q('select * from returns').filter(r => inR(r.d)), cus = q('select * from custody').filter(r => inR(r.d));
   const mv = items.map(i => { const sl = lines.filter(l => l.item_id == i.id), rt = rets.filter(r => r.item_id == i.id), b = bal(i.id);
-    return {i, rec: sum(cus.filter(c => c.item_id == i.id && c.kind == 'in'), c => c.qty), out: sum(cus.filter(c => c.item_id == i.id && c.kind == 'out'), c => c.qty), sq: sum(sl, l => l.qty), sv: sum(sl, l => l.qty * l.price), rq: sum(rt, r => r.qty), rv: sum(rt, r => r.qty * r.price), b}; });
+    return {i, rec: sum(cus.filter(c => c.item_id == i.id && c.kind == 'in'), c => c.qty), out: sum(cus.filter(c => c.item_id == i.id && c.kind == 'out'), c => c.qty), sq: sum(sl, l => l.bq), sv: sum(sl, l => l.qty * l.price), rq: sum(rt, r => r.qty), rv: sum(rt, r => r.qty * r.price), b}; });
   const tally = {}; rets.forEach(r => tally[r.reason] = (tally[r.reason] || 0) + r.qty * r.price);
-  const qtyBy = {}; q('select inv_id,sum(qty) s from inv_lines group by inv_id').forEach(r => qtyBy[r.inv_id] = r.s);
+  const qtyBy = {}; q('select inv_id,sum(coalesce(bq,qty)) s from inv_lines group by inv_id').forEach(r => qtyBy[r.inv_id] = r.s);
   const cu = {}; inv.forEach(r => { const o = cu[r.cust_name] || (cu[r.cust_name] = {n: 0, q: 0, v: 0, p: 0, cls: ''}); o.n++; o.q += qtyBy[r.id] || 0; o.v += r.total; o.p += r.paid; o.cls = r.tier || ''; });
   const cc = {'يوزر': 0, 'جملة': 0, 'موزع': 0}; Object.values(cu).forEach(o => { if (cc[o.cls] != null) cc[o.cls]++; });
   const tot = (a, k) => n(sum(a, x => x[k]));
@@ -845,7 +850,7 @@ PAGES.sal = () => {
   const inv = q('select * from invoices').filter(r => inR(r.d)), rets = q('select * from returns').filter(r => inR(r.d));
   const sales = sum(inv, r => r.total), retV = sum(rets, r => r.qty * r.price), net = sales - retV, C = cashStats(inR), coll = C.cashIn + C.trIn;
   const cm = {}; q('select id,comm from items').forEach(i => cm[i.id] = i.comm || 0);
-  const lc = sum(q('select i.d,l.item_id,l.qty from inv_lines l join invoices i on i.id=l.inv_id').filter(r => inR(r.d)), r => r.qty * (cm[r.item_id] || 0)) - sum(rets, r => r.qty * (cm[r.item_id] || 0));
+  const lc = sum(q('select i.d,l.item_id,coalesce(l.bq,l.qty) qty from inv_lines l join invoices i on i.id=l.inv_id').filter(r => inR(r.d)), r => r.qty * (cm[r.item_id] || 0)) - sum(rets, r => r.qty * (cm[r.item_id] || 0));
   const rate = +S.comm_rate || 0, cs = {sales: net * rate / 100, collected: coll * rate / 100, item: lc}, comm = cs[S.comm_mode] ?? 0;
   const advAll = q('select * from advances order by d desc,id desc'), advM = sum(advAll.filter(a => inR(a.d)), a => a.amount), reimb = sum(q("select * from expenses where src='own'").filter(e => inR(e.d)), e => e.amount);
   const base = +S.base || 0, gross = base + comm + reimb, remain = gross - advM, MN = {sales: 'نسبة من المبيعات', collected: 'نسبة من المحصّل', item: 'مبلغ على الوحدة'};
@@ -924,6 +929,7 @@ const GUIDE = [
   ['رصيد العهدة', 'الرصيد = استلام − رد − مبيعات + مرتجعات العملاء. بيتحدث لوحده مع كل فاتورة ومرتجع.'],
   ['تعديل/حذف حركة', 'بيعدّل الرصيد فورًا. اتأكد قبل ما تحذف.']]],
  ['🧾 فاتورة جديدة', 'أهم صفحة. البرنامج بيرقّم الفاتورة تلقائي.', [
+  ['بيع بـ (كرتونة / قطعة)', 'بتظهر لما الصنف كرتونة بعدد قطع (زي «كرتونة 12ق»). اختار «قطعة» عشان تبيع قطع من الكرتونة: السعر بيتحسب لوحده (سعر الكرتونة ÷ عدد القطع) والمخصوم من العهدة كسر من الكرتونة، والرصيد بيظهر «5 كرتونة و 3 قطعة». مستوى الفاتورة (يوزر/جملة/موزع) بيتحسب بالكراتين، والقطع بتتحول لكرتونة (12 قطعة = 1).'],
   ['التاريخ', 'تاريخ البيع (النهارده تلقائي). بيتحسب منه ميعاد الاستحقاق.'],
   ['اسم العميل', 'اكتب أول حروف الاسم أو جزء من التليفون أو العنوان وهتظهر قائمة، اختار منها وباقي البيانات بتتملّي. لو اسم جديد اكتبه عادي.'],
   ['حفظ كعميل جديد', 'بيسجل العميل اللي كتبت بياناته في ملف العملاء من غير ما تخرج من الفاتورة.'],

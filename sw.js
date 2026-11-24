@@ -1,6 +1,6 @@
 // Service Worker (عامل الخدمة = اللي بيخلي البرنامج يشتغل بدون نت)
-// مهم: كل ما تحدّث index.html غيّر رقم النسخة تحت (v5 ← v6 ← v7...)
-const CACHE = 'rep-v5';
+// مهم: كل ما تحدّث index.html غيّر رقم النسخة تحت (v6 ← v7 ← v8...)
+const CACHE = 'rep-v6';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-v3-192.png', './icon-v3-512.png', './icon-v3-512-maskable.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => Promise.all(FILES.map(u => c.add(new Request(u, { cache: 'reload' })).catch(() => {})))).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
